@@ -20,8 +20,11 @@ _BLOCKED_HOST_FRAGMENTS = (
     "openweathermap.org",
     "weatherapi.com",
     "coingecko.com",
+    "openrouter.ai",
     "api.openai.com",
     "api.groq.com",  # raw provider, not a miner base_url
+    "api.together.xyz",
+    "api.fireworks.ai",
     "googleapis.com",
     "binance.com",
     "coinbase.com",
@@ -83,7 +86,7 @@ def _intent_blob(item: Dict[str, Any]) -> str:
 
 
 def _looks_chat_capable(item: Dict[str, Any], base_url: str) -> bool:
-    """Strict: only miners that look like CHAT_COMPLETION HTTP chat APIs."""
+    """Strict: Telegraph CHAT_COMPLETION miners only — not raw SaaS APIs."""
     if _host_blocked(base_url):
         return False
 
@@ -93,17 +96,16 @@ def _looks_chat_capable(item: Dict[str, Any], base_url: str) -> bool:
     has_chat_intent = any(m in intents for m in _CHAT_INTENT_MARKERS)
     has_chat_path = any(m in endpoints for m in _CHAT_PATH_MARKERS)
 
-    # Must have chat intent and/or an explicit chat path in the catalog entry
-    if has_chat_intent or has_chat_path:
-        return True
+    # Require an explicit chat signal from the catalog entry
+    if not (has_chat_intent or has_chat_path):
+        return False
 
-    # Last resort: name/slug clearly a chatbot / LLM miner, not weather/crypto
+    # Reject generic API gateways even if they look "chat-ish"
     name_slug = f"{item.get('name', '')} {item.get('slug', '')}".lower()
-    if any(k in name_slug for k in ("chatbot", "chat-completion", "llm", "groq", "llama", "gpt")):
-        if not any(k in name_slug for k in ("weather", "storm", "crypto", "price", "forecast")):
-            return True
+    if any(k in name_slug for k in ("openrouter", "openweather", "weatherapi", "coingecko")):
+        return False
 
-    return False
+    return True
 
 
 def _extract_base_url(item: Dict[str, Any]) -> Optional[str]:
