@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Signal Jury — Telegraph Track 3</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="bg"></div>
+  <main class="shell">
+    <header class="hero">
+      <p class="eyebrow">Telegraph Protocol · Track 3</p>
+      <h1>Signal Jury</h1>
+      <p class="lede">
+        Ask a forecast question. Live Telegraph miners deliberate in parallel.
+        You get a short brief plus dissent — no mocked answers.
+      </p>
+    </header>
+
+    <section class="panel">
+      <label for="q">Question</label>
+      <textarea id="q" rows="3" placeholder="Will multi-agent systems become mainstream by 2027?"></textarea>
+      <div class="row">
+        <button id="go" type="button">Convene jury</button>
+        <span id="status" class="status" aria-live="polite"></span>
+      </div>
+      <p class="hint">Uses configured live miner HTTPS endpoints (see README / <code>/api/miners</code>).</p>
+    </section>
+
+    <section id="brief" class="panel hidden"></section>
+    <section id="votes" class="votes"></section>
+
+    <footer class="foot">
+      <a href="https://hackathon.telegraphprotocol.com/" target="_blank" rel="noreferrer">Hackathon</a>
+      ·
+      <a href="https://explorer.telegraphprotocol.com/" target="_blank" rel="noreferrer">Explorer</a>
+      ·
+      <a href="/docs" target="_blank" rel="noreferrer">API docs</a>
+    </footer>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>
