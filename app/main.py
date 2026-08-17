@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from .brief import build_brief
 from .config import get_settings
+from .discover import discover_miners, resolve_jury_roster
 from .miners import query_jury
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -20,7 +21,7 @@ STATIC = ROOT / "static"
 app = FastAPI(
     title="Signal Jury",
     description="Track 3 app — multi-miner forecast briefs on live Telegraph miners",
-    version="0.1.0",
+    version="0.2.0",
 )
 
 app.add_middleware(
@@ -38,6 +39,7 @@ if STATIC.is_dir():
 class DeliberateRequest(BaseModel):
     question: str = Field(..., min_length=3, max_length=2000)
     miner_base_urls: Optional[List[str]] = None
+    discover: Optional[bool] = None  # None = use settings.discovery_enabled
 
 
 @app.get("/health")
@@ -46,20 +48,31 @@ async def health():
     return {
         "status": "ok",
         "app": "signal-jury",
+        "version": "0.2.0",
         "track": 3,
         "protocol": "telegraph",
         "miners_configured": len(s.base_urls()),
         "miner_base_urls": s.base_urls(),
+        "discovery_enabled": s.discovery_enabled,
+        "telegraph_node_url": s.telegraph_node_url,
+        "max_jury_size": s.max_jury_size,
     }
 
 
 @app.get("/api/miners")
-async def list_miners():
+async def list_miners(discover: bool = True):
     s = get_settings()
-    return [
-        {"name": name, "base_url": url}
-        for name, url in zip(s.names(), s.base_urls())
-    ]
+    if discover and s.discovery_enabled:
+        roster = await resolve_jury_roster(s)
+        discovered = await discover_miners(s)
+    else:
+        roster = list(zip(s.names(), s.base_urls()))
+        discovered = []
+    return {
+        "jury": [{"name": n, "base_url": u, "role": "primary" if i == 0 else "peer"} for i, (n, u) in enumerate(roster)],
+        "discovered_catalog_count": len(discovered),
+        "discovery_enabled": s.discovery_enabled,
+    }
 
 
 @app.post("/api/deliberate")
@@ -76,14 +89,22 @@ async def deliberate(req: DeliberateRequest):
             "miner_base_urls",
             ",".join(u.strip().rstrip("/") for u in req.miner_base_urls if u.strip()),
         )
+        object.__setattr__(settings, "discovery_enabled", False)
 
-    if not settings.base_urls():
-        raise HTTPException(status_code=500, detail="No MINER_BASE_URLS configured")
+    use_discovery = settings.discovery_enabled if req.discover is None else req.discover
+    if not use_discovery:
+        settings = copy(settings)
+        object.__setattr__(settings, "discovery_enabled", False)
 
-    votes = await query_jury(settings, question)
+    roster = await resolve_jury_roster(settings)
+    if not roster:
+        raise HTTPException(status_code=500, detail="No miners available (check MINER_BASE_URLS)")
+
+    votes = await query_jury(settings, question, roster=roster)
     brief = build_brief(question, votes)
     return {
         "brief": brief,
+        "roster": [{"name": n, "base_url": u} for n, u in roster],
         "votes": [
             {
                 "name": v.get("name"),
@@ -100,6 +121,7 @@ async def deliberate(req: DeliberateRequest):
             "track": 3,
             "requirement": "live_telegraph_miners",
             "mocks": False,
+            "mode": "parallel_jury",
         },
     }
 

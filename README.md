@@ -20,12 +20,19 @@ It also creates **demand** on Track 1 miners (including `groq-llama31-instant-mi
 ## Architecture (short)
 
 ```text
-Browser UI  →  Signal Jury API  →  Miner A (live)
-                              ├→  Miner B (live)
-                              └→  Miner C (live)
-                     ↓
-              Heuristic brief (agree / split / no quorum)
+Browser UI  →  Signal Jury API
+                 │
+                 ├─ primary: your miner (MINER_BASE_URLS)
+                 └─ discover peers: GET {TELEGRAPH_NODE_URL}/miner-dispatcher/integrations
+                        │
+                        ▼
+                 Query up to MAX_JURY_SIZE miners in parallel (asyncio.gather)
+                        │
+                        ▼
+                 Heuristic brief (agree / split / no quorum)
 ```
+
+If catalog discovery times out, the jury still runs on your configured primary miner(s).
 
 ## Quick start
 
@@ -45,11 +52,18 @@ Open http://127.0.0.1:8080
 In `.env`:
 
 ```env
-MINER_BASE_URLS=https://telegraph-miner-node.onrender.com,https://OTHER-LIVE-MINER
-MINER_NAMES=Telegraph Groq LPU Miner,Other Miner
+MINER_BASE_URLS=https://telegraph-miner-node.onrender.com
+MINER_NAMES=Telegraph Groq LPU Miner
+DISCOVERY_ENABLED=true
+TELEGRAPH_NODE_URL=http://13.237.89.59:7044
+MAX_JURY_SIZE=4
 ```
 
-Add only **public HTTPS miners** that accept OpenAI-style chat POSTs (as registered on Telegraph).
+- **Primary** URLs always sit first in the jury.
+- **Discovery** adds other HTTPS catalog miners (chat-ish filter), capped by `MAX_JURY_SIZE`.
+- All selected miners are queried **in parallel**.
+
+Add only public HTTPS miners that accept OpenAI-style chat POSTs when listing extras manually.
 
 ## How to use
 

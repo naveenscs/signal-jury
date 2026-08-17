@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
 from .config import Settings
+from .discover import resolve_jury_roster
 
 
 def _extract_output(payload: Any) -> str:
@@ -105,9 +106,14 @@ async def query_miner(
     }
 
 
-async def query_jury(settings: Settings, question: str) -> List[Dict[str, Any]]:
-    urls = settings.base_urls()
-    names = settings.names()
+async def query_jury(
+    settings: Settings,
+    question: str,
+    roster: Optional[List[Tuple[str, str]]] = None,
+) -> List[Dict[str, Any]]:
+    """Query all roster miners in parallel (asyncio.gather)."""
+    if roster is None:
+        roster = await resolve_jury_roster(settings)
     paths = settings.chat_paths()
     timeout = httpx.Timeout(settings.miner_timeout_seconds)
 
@@ -115,12 +121,12 @@ async def query_jury(settings: Settings, question: str) -> List[Dict[str, Any]]:
         tasks = [
             query_miner(
                 client,
-                name=names[i],
-                base_url=urls[i],
+                name=name,
+                base_url=url,
                 paths=paths,
                 question=question,
-                slug_hint=names[i].lower().replace(" ", "-"),
+                slug_hint=name.lower().replace(" ", "-"),
             )
-            for i in range(len(urls))
+            for name, url in roster
         ]
         return list(await asyncio.gather(*tasks))
