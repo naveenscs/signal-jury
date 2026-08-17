@@ -35,22 +35,44 @@ _BLOCKED_HOST_FRAGMENTS = (
 _CHAT_INTENT_MARKERS = (
     "chat_completion",
     "chat-completion",
+    "chat completion",
     "language_generation",
+    "language generation",
     "text_generation",
+    "text generation",
     "llm",
 )
 
-_CHAT_PATH_MARKERS = (
-    "/chat",
-    "/v1/chat",
-    "chat/completions",
-    "completions",
-)
+
+def _normalize_text(value: str) -> str:
+    return (
+        value.lower()
+        .replace("-", " ")
+        .replace("_", " ")
+        .replace("/", " ")
+    )
 
 
 def _host_blocked(base_url: str) -> bool:
     host = (urlparse(base_url).hostname or "").lower()
     return any(b in host for b in _BLOCKED_HOST_FRAGMENTS)
+
+
+def _intent_blob(item: Dict[str, Any]) -> str:
+    intents = item.get("supported_intents") or item.get("intents") or []
+    bits: List[str] = []
+    if isinstance(intents, list):
+        bits.extend(_normalize_text(str(x)) for x in intents)
+    elif isinstance(intents, str):
+        bits.append(_normalize_text(intents))
+    for key in ("slug", "name", "description", "protocol", "kind"):
+        val = item.get(key)
+        if isinstance(val, str):
+            bits.append(_normalize_text(val))
+    semantics = item.get("semantics") or {}
+    if isinstance(semantics, dict):
+        bits.append(_normalize_text(str(semantics)))
+    return " ".join(bits)
 
 
 def _endpoint_blob(item: Dict[str, Any]) -> str:
@@ -59,30 +81,13 @@ def _endpoint_blob(item: Dict[str, Any]) -> str:
         val = item.get(key)
         if val is None:
             continue
-        parts.append(str(val).lower())
+        parts.append(_normalize_text(str(val)))
     cfg = item.get("config") or item.get("yaml") or {}
     if isinstance(cfg, dict):
         for key in ("endpoints", "endpoint"):
             if key in cfg:
-                parts.append(str(cfg[key]).lower())
+                parts.append(_normalize_text(str(cfg[key])))
     return " ".join(parts)
-
-
-def _intent_blob(item: Dict[str, Any]) -> str:
-    intents = item.get("supported_intents") or item.get("intents") or []
-    bits: List[str] = []
-    if isinstance(intents, list):
-        bits.extend(str(x).lower() for x in intents)
-    elif isinstance(intents, str):
-        bits.append(intents.lower())
-    for key in ("slug", "name", "description", "protocol", "kind"):
-        val = item.get(key)
-        if isinstance(val, str):
-            bits.append(val.lower())
-    semantics = item.get("semantics") or {}
-    if isinstance(semantics, dict):
-        bits.append(str(semantics).lower())
-    return " ".join(bits)
 
 
 def _looks_chat_capable(item: Dict[str, Any], base_url: str) -> bool:
@@ -93,16 +98,28 @@ def _looks_chat_capable(item: Dict[str, Any], base_url: str) -> bool:
     intents = _intent_blob(item)
     endpoints = _endpoint_blob(item)
 
-    has_chat_intent = any(m in intents for m in _CHAT_INTENT_MARKERS)
-    has_chat_path = any(m in endpoints for m in _CHAT_PATH_MARKERS)
+    # Normalize markers the same way (underscores/hyphens → spaces)
+    markers = [_normalize_text(m) for m in _CHAT_INTENT_MARKERS]
+    has_chat_intent = any(m in intents for m in markers)
+    has_chat_path = any(
+        m in endpoints
+        for m in (
+            "chat",
+            "v1 chat",
+            "chat completions",
+            "completions",
+        )
+    )
 
-    # Require an explicit chat signal from the catalog entry
-    if not (has_chat_intent or has_chat_path):
+    name_slug = _normalize_text(f"{item.get('name', '')} {item.get('slug', '')}")
+    if any(k in name_slug for k in ("openrouter", "openweather", "weatherapi", "coingecko")):
         return False
 
-    # Reject generic API gateways even if they look "chat-ish"
-    name_slug = f"{item.get('name', '')} {item.get('slug', '')}".lower()
-    if any(k in name_slug for k in ("openrouter", "openweather", "weatherapi", "coingecko")):
+    # Knowledge Chatbot / similar: name alone is a strong signal
+    if "chatbot" in name_slug or "chat completion" in name_slug:
+        return True
+
+    if not (has_chat_intent or has_chat_path):
         return False
 
     return True
