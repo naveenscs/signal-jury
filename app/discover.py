@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 import httpx
 
@@ -13,54 +15,102 @@ logger = logging.getLogger("signal-jury.discover")
 _cache: Dict[str, Any] = {"at": 0.0, "miners": []}
 _CACHE_TTL_SEC = 120.0
 
+# Public SaaS APIs that sometimes appear in catalogs but are NOT Telegraph chat miners
+_BLOCKED_HOST_FRAGMENTS = (
+    "openweathermap.org",
+    "weatherapi.com",
+    "coingecko.com",
+    "api.openai.com",
+    "api.groq.com",  # raw provider, not a miner base_url
+    "googleapis.com",
+    "binance.com",
+    "coinbase.com",
+    "alchemy.com",
+    "infura.io",
+)
 
-def _looks_chat_capable(item: Dict[str, Any]) -> bool:
-    blob = " ".join(
-        str(item.get(k, ""))
-        for k in (
-            "slug",
-            "name",
-            "description",
-            "supported_intents",
-            "intents",
-            "protocol",
-        )
-    ).lower()
+_CHAT_INTENT_MARKERS = (
+    "chat_completion",
+    "chat-completion",
+    "language_generation",
+    "text_generation",
+    "llm",
+)
+
+_CHAT_PATH_MARKERS = (
+    "/chat",
+    "/v1/chat",
+    "chat/completions",
+    "completions",
+)
+
+
+def _host_blocked(base_url: str) -> bool:
+    host = (urlparse(base_url).hostname or "").lower()
+    return any(b in host for b in _BLOCKED_HOST_FRAGMENTS)
+
+
+def _endpoint_blob(item: Dict[str, Any]) -> str:
+    parts: List[str] = []
+    for key in ("endpoints", "endpoint", "paths", "routes"):
+        val = item.get(key)
+        if val is None:
+            continue
+        parts.append(str(val).lower())
+    cfg = item.get("config") or item.get("yaml") or {}
+    if isinstance(cfg, dict):
+        for key in ("endpoints", "endpoint"):
+            if key in cfg:
+                parts.append(str(cfg[key]).lower())
+    return " ".join(parts)
+
+
+def _intent_blob(item: Dict[str, Any]) -> str:
     intents = item.get("supported_intents") or item.get("intents") or []
+    bits: List[str] = []
     if isinstance(intents, list):
-        blob += " " + " ".join(str(x).lower() for x in intents)
+        bits.extend(str(x).lower() for x in intents)
+    elif isinstance(intents, str):
+        bits.append(intents.lower())
+    for key in ("slug", "name", "description", "protocol", "kind"):
+        val = item.get(key)
+        if isinstance(val, str):
+            bits.append(val.lower())
+    semantics = item.get("semantics") or {}
+    if isinstance(semantics, dict):
+        bits.append(str(semantics).lower())
+    return " ".join(bits)
 
-    # Prefer chat / language miners; skip obvious weather/news-only if we can tell
-    positive = any(
-        k in blob
-        for k in (
-            "chat",
-            "completion",
-            "language",
-            "text_generation",
-            "llm",
-            "groq",
-            "openai",
-            "llama",
-            "generic",
-        )
-    )
-    negative_only = any(
-        k in blob
-        for k in ("storm", "weather_forecast", "zeus", "bittensor-sn18", "deepfake", "virustotal")
-    )
-    if negative_only and not positive:
+
+def _looks_chat_capable(item: Dict[str, Any], base_url: str) -> bool:
+    """Strict: only miners that look like CHAT_COMPLETION HTTP chat APIs."""
+    if _host_blocked(base_url):
         return False
-    # If unclear, still allow — jury will error fast on wrong APIs
-    return True
+
+    intents = _intent_blob(item)
+    endpoints = _endpoint_blob(item)
+
+    has_chat_intent = any(m in intents for m in _CHAT_INTENT_MARKERS)
+    has_chat_path = any(m in endpoints for m in _CHAT_PATH_MARKERS)
+
+    # Must have chat intent and/or an explicit chat path in the catalog entry
+    if has_chat_intent or has_chat_path:
+        return True
+
+    # Last resort: name/slug clearly a chatbot / LLM miner, not weather/crypto
+    name_slug = f"{item.get('name', '')} {item.get('slug', '')}".lower()
+    if any(k in name_slug for k in ("chatbot", "chat-completion", "llm", "groq", "llama", "gpt")):
+        if not any(k in name_slug for k in ("weather", "storm", "crypto", "price", "forecast")):
+            return True
+
+    return False
 
 
 def _extract_base_url(item: Dict[str, Any]) -> Optional[str]:
-    for key in ("base_url", "baseUrl", "url", "endpoint", "host"):
+    for key in ("base_url", "baseUrl"):
         val = item.get(key)
         if isinstance(val, str) and val.strip():
             return val.strip().rstrip("/")
-    # nested yaml-ish
     cfg = item.get("config") or item.get("yaml") or {}
     if isinstance(cfg, dict):
         for key in ("base_url", "baseUrl"):
@@ -75,6 +125,8 @@ def _extract_name(item: Dict[str, Any], base_url: str) -> str:
         val = item.get(key)
         if isinstance(val, str) and val.strip():
             return val.strip()
+        if val is not None and key == "id":
+            return str(val)
     return base_url
 
 
@@ -86,16 +138,18 @@ def _normalize_list(payload: Any) -> List[Dict[str, Any]]:
             val = payload.get(key)
             if isinstance(val, list):
                 return [x for x in val if isinstance(x, dict)]
-        # single object
         if _extract_base_url(payload):
             return [payload]
     return []
 
 
+def clear_discovery_cache() -> None:
+    _cache["at"] = 0.0
+    _cache["miners"] = []
+
+
 async def discover_miners(settings: Settings) -> List[Tuple[str, str]]:
     """Return list of (name, base_url) from Telegraph node catalog."""
-    import time
-
     now = time.time()
     if _cache["miners"] and now - float(_cache["at"]) < _CACHE_TTL_SEC:
         return list(_cache["miners"])
@@ -124,7 +178,7 @@ async def discover_miners(settings: Settings) -> List[Tuple[str, str]]:
             continue
         if settings.discovery_require_https and not base.lower().startswith("https://"):
             continue
-        if not _looks_chat_capable(item):
+        if not _looks_chat_capable(item, base):
             continue
         key = base.lower()
         if key in seen:
@@ -134,7 +188,7 @@ async def discover_miners(settings: Settings) -> List[Tuple[str, str]]:
 
     _cache["at"] = now
     _cache["miners"] = found
-    logger.info("Discovered %s candidate miners from catalog", len(found))
+    logger.info("Discovered %s chat-capable miners from catalog", len(found))
     return found
 
 

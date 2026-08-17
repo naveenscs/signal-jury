@@ -21,7 +21,7 @@ STATIC = ROOT / "static"
 app = FastAPI(
     title="Signal Jury",
     description="Track 3 app — multi-miner forecast briefs on live Telegraph miners",
-    version="0.2.0",
+    version="0.2.1",
 )
 
 app.add_middleware(
@@ -37,9 +37,24 @@ if STATIC.is_dir():
 
 
 class DeliberateRequest(BaseModel):
-    question: str = Field(..., min_length=3, max_length=2000)
-    miner_base_urls: Optional[List[str]] = None
-    discover: Optional[bool] = None  # None = use settings.discovery_enabled
+    question: str = Field(
+        ...,
+        min_length=3,
+        max_length=2000,
+        examples=["Will Claude system prompts be widely adopted?"],
+    )
+    # Omit this field (or null) to use MINER_BASE_URLS + discovery.
+    # Only set it to override with explicit Telegraph miner HTTPS base URLs.
+    miner_base_urls: Optional[List[str]] = Field(
+        default=None,
+        examples=[None],
+        description="Optional override list of miner base URLs. Leave null to use env + discovery.",
+    )
+    discover: Optional[bool] = Field(
+        default=None,
+        examples=[True],
+        description="None = use DISCOVERY_ENABLED from settings",
+    )
 
 
 @app.get("/health")
@@ -48,7 +63,7 @@ async def health():
     return {
         "status": "ok",
         "app": "signal-jury",
-        "version": "0.2.0",
+        "version": "0.2.1",
         "track": 3,
         "protocol": "telegraph",
         "miners_configured": len(s.base_urls()),
