@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from .brief import build_brief
 from .config import get_settings
-from .discover import discover_miners, resolve_jury_roster
+from .discover import discover_miners, discovery_debug, resolve_jury_roster
 from .miners import query_jury
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -88,6 +88,12 @@ async def list_miners(discover: bool = True):
         "discovered_catalog_count": len(discovered),
         "discovery_enabled": s.discovery_enabled,
     }
+
+
+@app.get("/api/discovery/debug")
+async def discovery_debug_endpoint():
+    """Show why catalog miners are kept or skipped (clears discovery cache)."""
+    return await discovery_debug(get_settings())
 
 
 @app.post("/api/deliberate")

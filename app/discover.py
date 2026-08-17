@@ -59,19 +59,25 @@ def _host_blocked(base_url: str) -> bool:
 
 
 def _intent_blob(item: Dict[str, Any]) -> str:
-    intents = item.get("supported_intents") or item.get("intents") or []
     bits: List[str] = []
-    if isinstance(intents, list):
-        bits.extend(_normalize_text(str(x)) for x in intents)
-    elif isinstance(intents, str):
-        bits.append(_normalize_text(intents))
+
+    def _take_intents(val: Any) -> None:
+        if isinstance(val, list):
+            bits.extend(_normalize_text(str(x)) for x in val)
+        elif isinstance(val, str) and val.strip():
+            bits.append(_normalize_text(val))
+
+    _take_intents(item.get("supported_intents") or item.get("intents"))
+    for nest_key in ("semantics", "config", "yaml", "manifest"):
+        nest = item.get(nest_key)
+        if isinstance(nest, dict):
+            _take_intents(nest.get("supported_intents") or nest.get("intents"))
+            bits.append(_normalize_text(str(nest)))
+
     for key in ("slug", "name", "description", "protocol", "kind"):
         val = item.get(key)
         if isinstance(val, str):
             bits.append(_normalize_text(val))
-    semantics = item.get("semantics") or {}
-    if isinstance(semantics, dict):
-        bits.append(_normalize_text(str(semantics)))
     return " ".join(bits)
 
 
@@ -167,6 +173,29 @@ def clear_discovery_cache() -> None:
     _cache["miners"] = []
 
 
+async def _fetch_catalog_items(settings: Settings) -> List[Dict[str, Any]]:
+    node = settings.telegraph_node_url.rstrip("/")
+    url = f"{node}/miner-dispatcher/integrations"
+    timeout = httpx.Timeout(settings.discovery_timeout_seconds)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        return _normalize_list(resp.json())
+
+
+def _skip_reason(item: Dict[str, Any], base: Optional[str], settings: Settings) -> Optional[str]:
+    """Return why an item is excluded, or None if it would be kept."""
+    if not base:
+        return "no_base_url"
+    if settings.discovery_require_https and not base.lower().startswith("https://"):
+        return "not_https"
+    if _host_blocked(base):
+        return "host_blocked"
+    if not _looks_chat_capable(item, base):
+        return "not_chat_capable"
+    return None
+
+
 async def discover_miners(settings: Settings) -> List[Tuple[str, str]]:
     """Return list of (name, base_url) from Telegraph node catalog."""
     now = time.time()
@@ -176,29 +205,24 @@ async def discover_miners(settings: Settings) -> List[Tuple[str, str]]:
     if not settings.discovery_enabled:
         return []
 
-    node = settings.telegraph_node_url.rstrip("/")
-    url = f"{node}/miner-dispatcher/integrations"
     found: List[Tuple[str, str]] = []
-
     try:
-        timeout = httpx.Timeout(settings.discovery_timeout_seconds)
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            items = _normalize_list(resp.json())
+        items = await _fetch_catalog_items(settings)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Miner discovery failed (%s): %s", url, exc)
+        node = settings.telegraph_node_url.rstrip("/")
+        logger.warning(
+            "Miner discovery failed (%s/miner-dispatcher/integrations): %s",
+            node,
+            exc,
+        )
         return []
 
     seen = set()
     for item in items:
         base = _extract_base_url(item)
-        if not base:
+        if _skip_reason(item, base, settings):
             continue
-        if settings.discovery_require_https and not base.lower().startswith("https://"):
-            continue
-        if not _looks_chat_capable(item, base):
-            continue
+        assert base is not None
         key = base.lower()
         if key in seen:
             continue
@@ -209,6 +233,65 @@ async def discover_miners(settings: Settings) -> List[Tuple[str, str]]:
     _cache["miners"] = found
     logger.info("Discovered %s chat-capable miners from catalog", len(found))
     return found
+
+
+async def discovery_debug(settings: Settings) -> Dict[str, Any]:
+    """Explain keep/skip decisions for catalog entries (for /api/discovery/debug)."""
+    clear_discovery_cache()
+    try:
+        items = await _fetch_catalog_items(settings)
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "error": str(exc),
+            "telegraph_node_url": settings.telegraph_node_url,
+            "catalog_count": 0,
+            "kept": [],
+            "skipped_summary": {},
+            "interesting": [],
+        }
+
+    kept: List[Dict[str, Any]] = []
+    skipped_summary: Dict[str, int] = {}
+    interesting: List[Dict[str, Any]] = []
+
+    for item in items:
+        base = _extract_base_url(item)
+        name = _extract_name(item, base or "")
+        reason = _skip_reason(item, base, settings)
+        name_l = name.lower()
+        slug = str(item.get("slug") or "")
+        watch = any(
+            k in name_l or k in slug.lower()
+            for k in ("chatbot", "knowledge", "groq", "llama", "chat", "llm", "openai")
+        )
+        row = {
+            "name": name,
+            "slug": slug or None,
+            "base_url": base,
+            "skip_reason": reason,
+        }
+        if reason is None:
+            kept.append(row)
+        else:
+            skipped_summary[reason] = skipped_summary.get(reason, 0) + 1
+        if watch or reason is None:
+            interesting.append(row)
+
+    return {
+        "ok": True,
+        "telegraph_node_url": settings.telegraph_node_url,
+        "catalog_count": len(items),
+        "kept_count": len(kept),
+        "kept": kept,
+        "skipped_summary": skipped_summary,
+        "interesting": interesting,
+        "hint": (
+            "If telegraph-chatbot shows no_base_url or not_https, Signal Jury cannot "
+            "call it as a peer until its public HTTPS base_url is in the catalog. "
+            "Restart uvicorn after git pull so discovery code reloads."
+        ),
+    }
 
 
 async def resolve_jury_roster(settings: Settings) -> List[Tuple[str, str]]:
