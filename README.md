@@ -76,6 +76,17 @@ Interactive OpenAPI: http://127.0.0.1:8080/docs
 - Docs: [docs/DESIGN.md](docs/DESIGN.md), [docs/HACKATHON.md](docs/HACKATHON.md), [docs/X_POSTS.md](docs/X_POSTS.md).
 - This app’s lean/consensus is a **UX heuristic**, not Telegraph’s on-chain stake-weighted median.
 
+## Note: Track 1 miner model migration (Aug 16, 2026)
+
+Groq shut down `llama-3.1-8b-instant` on **2026-08-16** ([deprecations](https://console.groq.com/docs/deprecations)).  
+If your miner returns `model_not_found`, set Render env:
+
+```env
+GROQ_MODEL=openai/gpt-oss-20b
+```
+
+Then restart. Signal Jury will work again once the miner answers 200.
+
 ## Deploy (optional)
 
 Any host that can reach miner URLs (Render, Fly, VPS):
