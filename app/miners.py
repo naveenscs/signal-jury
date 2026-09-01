@@ -8,6 +8,7 @@ import httpx
 
 from .config import Settings
 from .discover import resolve_jury_roster
+from .engine import engine_ask
 
 
 def _extract_output(payload: Any) -> str:
@@ -50,7 +51,6 @@ async def _post_chat(
     started = time.perf_counter()
     resp = await client.post(url, json=body)
     elapsed_ms = int((time.perf_counter() - started) * 1000)
-    data: Any
     try:
         data = resp.json()
     except Exception:
@@ -89,6 +89,8 @@ async def query_miner(
                     "elapsed_ms": result["elapsed_ms"],
                     "output": result["output"],
                     "raw": result["payload"],
+                    "consume_path": "direct_miner",
+                    "error": None,
                 }
             last_error = result.get("error") or f"HTTP {result['status_code']}"
         except Exception as exc:  # noqa: BLE001
@@ -103,6 +105,7 @@ async def query_miner(
         "output": "",
         "error": last_error or "all chat paths failed",
         "raw": None,
+        "consume_path": "direct_miner",
     }
 
 
@@ -111,7 +114,51 @@ async def query_jury(
     question: str,
     roster: Optional[List[Tuple[str, str]]] = None,
 ) -> List[Dict[str, Any]]:
-    """Query all roster miners in parallel (asyncio.gather)."""
+    """
+    Track 3 consume flow:
+      1) Prefer Telegraph Engine POST /engine/v1/ask (ranked routing)
+      2) Fall back / supplement with direct miner HTTPS (live Track 1 miners)
+    """
+    mode = (settings.telegraph_consume_mode or "engine_first").strip().lower()
+    votes: List[Dict[str, Any]] = []
+    engine_ok = False
+
+    if mode in ("engine_first", "engine_only", "engine"):
+        eng = await engine_ask(settings, question)
+        if eng.get("ok") and eng.get("output"):
+            engine_ok = True
+            votes.append(
+                {
+                    "name": eng.get("miner_name")
+                    or f"Telegraph Engine ({eng.get('miner_id') or 'routed'})",
+                    "base_url": eng.get("url") or settings.telegraph_engine_url,
+                    "path_used": "/engine/v1/ask",
+                    "status": "success",
+                    "elapsed_ms": eng.get("elapsed_ms") or 0,
+                    "output": eng["output"],
+                    "raw": eng.get("raw"),
+                    "consume_path": eng.get("consume_path") or "engine_ask",
+                    "error": None,
+                }
+            )
+        else:
+            votes.append(
+                {
+                    "name": "Telegraph Engine",
+                    "base_url": settings.telegraph_engine_url,
+                    "path_used": "/engine/v1/ask",
+                    "status": "error",
+                    "elapsed_ms": eng.get("elapsed_ms") or 0,
+                    "output": "",
+                    "raw": eng.get("raw"),
+                    "consume_path": eng.get("consume_path") or "engine_ask",
+                    "error": eng.get("error") or "engine_ask_failed",
+                }
+            )
+
+    if mode == "engine_only" and engine_ok:
+        return votes
+
     if roster is None:
         roster = await resolve_jury_roster(settings)
     paths = settings.chat_paths()
@@ -129,4 +176,6 @@ async def query_jury(
             )
             for name, url in roster
         ]
-        return list(await asyncio.gather(*tasks))
+        votes.extend(await asyncio.gather(*tasks))
+
+    return votes

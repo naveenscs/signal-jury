@@ -21,7 +21,7 @@ STATIC = ROOT / "static"
 app = FastAPI(
     title="Signal Jury",
     description="Track 3 app — multi-miner forecast briefs on live Telegraph miners",
-    version="0.2.1",
+    version="0.3.0",
 )
 
 app.add_middleware(
@@ -63,9 +63,12 @@ async def health():
     return {
         "status": "ok",
         "app": "signal-jury",
-        "version": "0.2.1",
+        "version": "0.3.0",
         "track": 3,
         "protocol": "telegraph",
+        "consume_mode": s.telegraph_consume_mode,
+        "telegraph_engine_url": s.telegraph_engine_url,
+        "telegraph_miner_id": s.telegraph_miner_id or None,
         "miners_configured": len(s.base_urls()),
         "miner_base_urls": s.base_urls(),
         "discovery_enabled": s.discovery_enabled,
@@ -123,6 +126,9 @@ async def deliberate(req: DeliberateRequest):
 
     votes = await query_jury(settings, question, roster=roster)
     brief = build_brief(question, votes)
+    consume_paths = sorted(
+        {str(v.get("consume_path") or "unknown") for v in votes if v.get("status") == "success"}
+    )
     return {
         "brief": brief,
         "roster": [{"name": n, "base_url": u} for n, u in roster],
@@ -135,14 +141,18 @@ async def deliberate(req: DeliberateRequest):
                 "elapsed_ms": v.get("elapsed_ms"),
                 "output": v.get("output"),
                 "error": v.get("error"),
+                "consume_path": v.get("consume_path"),
             }
             for v in votes
         ],
         "hackathon": {
             "track": 3,
-            "requirement": "live_telegraph_miners",
+            "requirement": "consume_ranked_telegraph_intelligence",
             "mocks": False,
-            "mode": "parallel_jury",
+            "mode": "engine_ask_then_parallel_jury",
+            "consume_mode": settings.telegraph_consume_mode,
+            "consume_paths_used": consume_paths,
+            "engine_url": settings.telegraph_engine_url,
         },
     }
 

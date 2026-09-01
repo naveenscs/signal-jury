@@ -19,10 +19,15 @@ class Settings(BaseSettings):
     discovery_enabled: bool = True
     telegraph_node_url: str = "http://13.237.89.59:7044"
     discovery_timeout_seconds: float = 8.0
-    # Max miners in one jury (primary + discovered)
     max_jury_size: int = 4
-    # Only keep HTTPS public base_urls that look chat-capable
     discovery_require_https: bool = True
+
+    # Track 3 consume — Telegraph Engine /ask (ranked routing)
+    # engine_first | engine_only | direct
+    telegraph_consume_mode: str = "engine_first"
+    telegraph_engine_url: str = "https://devnode.telegraphprotocol.com"
+    telegraph_miner_id: str = ""
+    telegraph_payment_header: str = ""
 
     host: str = "0.0.0.0"
     port: int = 8080

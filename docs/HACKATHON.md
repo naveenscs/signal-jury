@@ -8,7 +8,19 @@ Source: [Telegraph Hackathon](https://hackathon.telegraphprotocol.com/)
 - [ ] Usage and adoption
 - [ ] Creativity and usefulness
 - [x] Must use Telegraph miners (live HTTPS miners; `hackathon.mocks = false`)
+- [x] Prefer Track 3 **consume path**: `POST /engine/v1/ask` via `TELEGRAPH_ENGINE_URL` (falls back to direct miner HTTPS if engine returns 402/x402)
 - [ ] Engagement on posts showcasing the project
+
+## Consume mode (`TELEGRAPH_CONSUME_MODE`)
+
+| Value | Behavior |
+|---|---|
+| `engine_first` (default) | Try Engine `/ask` first, then parallel direct miners |
+| `engine_only` | Engine only (may fail with 402 until payment header is set) |
+| `direct` | Skip Engine; call miner HTTPS only |
+
+Env: `TELEGRAPH_ENGINE_URL=https://devnode.telegraphprotocol.com`  
+Optional: `TELEGRAPH_MINER_ID`, `TELEGRAPH_PAYMENT_HEADER` (x402)
 
 ## Before Track 3 window (~Aug 31)
 
